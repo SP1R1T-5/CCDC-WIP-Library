@@ -1,0 +1,83 @@
+# If ActiveDirectory module isn't loaded, try to import it
+$ActiveDirectoryModuleAvailable = $true
+if (-not (Get-Module -Name ActiveDirectory -ErrorAction SilentlyContinue)) {
+    try {
+        Import-Module ActiveDirectory
+    } catch {
+        Write-Warning "Failed to import ActiveDirectory module. Make sure it's installed."
+        $ActiveDirectoryModuleAvailable = $false
+    }
+}
+
+# Disable AD accounts, if ActiveDirectory module is available
+if ($ActiveDirectoryModuleAvailable) {
+    # Current user and excluded accounts
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $excludedAccounts = @("blackteam") # Add any other accounts to this array if needed
+
+    try {
+        Get-ADUser -Filter * | 
+        Where-Object { $_.SamAccountName -ne $currentUser.Split('\')[1] -and $excludedAccounts -notcontains $_.SamAccountName } | 
+        ForEach-Object {
+            $username = $_.SamAccountName
+            Disable-ADAccount -Identity $username
+            Write-Host "Disabled AD account: $username"
+        }
+    } catch {
+        Write-Warning "Failed to disable AD accounts. Make sure you have the necessary permissions."
+    }
+}
+
+# Disable unnecessary services
+$servicesToDisable = @('Telnet', 'SNMP')
+foreach ($svc in $servicesToDisable) {
+    if (Get-Service $svc -ErrorAction SilentlyContinue) {
+        Stop-Service $svc -Force -ErrorAction SilentlyContinue
+        Set-Service $svc -StartupType Disabled
+        Write-Host "Disabled: $svc" -ForegroundColor Green
+    }
+}
+
+# Enable Windows Firewall
+Set-NetFirewallProfile -Profile Domain,Public,Private -Enabled True
+Write-Host "Firewall enabled on all profiles" -ForegroundColor Green
+
+# Disable Guest account
+net user Guest /active:no 2>$null
+Write-Host "Guest account disabled" -ForegroundColor Green
+
+# List all local users
+Write-Host "`n[*] Local Users:" -ForegroundColor Cyan
+Get-LocalUser | Select Name, Enabled, LastLogon
+
+
+# Force password complexity
+secedit /export /cfg C:\secpol.cfg >$null
+(Get-Content C:\secpol.cfg).Replace("PasswordComplexity = 0", "PasswordComplexity = 1") | Set-Content C:\secpol.cfg
+secedit /configure /db C:\Windows\security\local.sdb /cfg C:\secpol.cfg /areas SECURITYPOLICY >$null
+Remove-Item C:\secpol.cfg
+Write-Host "Password complexity enforced" -ForegroundColor Green
+
+# Check for processes running from temp directories
+Get-Process | Where-Object { $_.Path -like "*\Temp\*" -or $_.Path -like "*\AppData\Local\Temp\*" } | 
+    Select-Object Name, Id, Path | Format-Table -AutoSize
+
+# Block common attack ports
+$portsToBlock = @(135, 139, 445, 3389, 5985, 5986)
+
+foreach ($port in $portsToBlock) {
+    New-NetFirewallRule -DisplayName "Block_Port_$port" -Direction Inbound -LocalPort $port -Protocol TCP -Action Block -ErrorAction SilentlyContinue
+    Write-Host "Blocked inbound TCP port: $port" -ForegroundColor Green
+}
+
+# Block common attack ports
+$portsToBlock = @(135, 139, 445, 3389, 5985, 5986)
+
+foreach ($port in $portsToBlock) {
+    New-NetFirewallRule -DisplayName "Block_Port_$port" -Direction Inbound -LocalPort $port -Protocol TCP -Action Block -ErrorAction SilentlyContinue
+    Write-Host "[+] Blocked inbound TCP port: $port" -ForegroundColor Green
+}
+
+#Kill WinRM 
+Stop-Service -Name WinRM
+Set-Service -Name WinRM -StartupType Disabled
