@@ -1,0 +1,98 @@
+#Define paths for output files in the user's Documents directory
+$basePath = [System.IO.Path]::Combine([Environment]::GetFolderPath("MyDocuments"), "Dump")
+if (!(Test-Path -Path $basePath)) {
+    New-Item -ItemType Directory -Force -Path $basePath
+}
+
+
+#Function to export AD domain configuration
+function Export-ADConfiguration {
+    # Export domain information
+    Get-ADDomain | Export-Clixml -Path "$basePath\DomainConfig.xml"
+
+    # Export organizational units
+    Get-ADOrganizationalUnit -Filter * | Export-Clixml -Path "$basePath\OrganizationalUnits.xml"
+
+    # Export users
+    Get-ADUser -Filter * | Export-Clixml -Path "$basePath\Users.xml"
+
+    # Export groups
+    Get-ADGroup -Filter * | Export-Clixml -Path "$basePath\Groups.xml"
+
+    # Export GPOs
+    Get-GPO -All | Export-Clixml -Path "$basePath\GPOs.xml"
+}
+
+
+#Define the path to the dump folder in the user's Documents
+$folderPath = [System.IO.Path]::Combine([Environment]::GetFolderPath("MyDocuments"), "Dump")
+If (!(Test-Path -Path $folderPath)) {
+    New-Item -ItemType Directory -Force -Path $folderPath
+}
+
+#Function to check if the machine is a Domain Controller
+function Is-DomainController {
+    $dc = (Get-WmiObject Win32_ComputerSystem).DomainRole
+    return $dc -eq 5 -or $dc -eq 6
+}
+
+#Dump DNS records if the machine is a Domain Controller
+if (Is-DomainController) {
+    try {
+        # Export DNS zones and records
+        $dnsZones = Get-DnsServerZone
+        foreach ($zone in $dnsZones) {
+            $zoneName = $zone.ZoneName
+            $records = Get-DnsServerResourceRecord -ZoneName $zoneName
+            $records | Export-Csv -Path "$folderPath\DNS_$zoneName.csv" -NoTypeInformation
+        }
+        # Combine all CSV files into a single text file
+        Get-ChildItem "$folderPath\DNS_*.csv" | Get-Content | Out-File "$folderPath\DNS.txt" -Encoding utf8
+        # Clean up individual CSV files
+        Get-ChildItem "$folderPath\DNS_*.csv" | Remove-Item
+    } catch {
+        Write-Error "An error occurred exporting DNS records: $_"
+    }
+} else {
+    Write-Host "This machine is not a Domain Controller."
+}
+
+#Function to export firewall rules based on the profile
+function Export-FirewallRules {
+    param (
+        [string]$profile
+    )
+
+    $outputFile = Join-Path $basePath "FirewallRules_$profile.txt"
+    Get-NetFirewallRule -Enabled True -Profile $profile | Format-Table -Property DisplayName, Action, Direction, Profile, Enabled, Group, LocalPort, RemotePort, Protocol | Out-File -FilePath $outputFile
+    Write-Host "Exported firewall rules for $profile profile to $outputFile"
+}
+
+#Export firewall rules for each profile
+Export-FirewallRules -profile "Domain"
+Export-FirewallRules -profile "Private"
+Export-FirewallRules -profile "Public"
+
+# Define the output CSV file
+$outputFile = "C:\validTaskSchedulerXREF.csv"
+
+# Fetch scheduled tasks using Get-ScheduledTask cmdlet
+$tasks = Get-ScheduledTask | ForEach-Object {
+    $task = $_
+    $actions = $task.Actions | ForEach-Object {
+        $_ | Select-Object -Property Command, Arguments
+    }
+
+    [PSCustomObject]@{
+        TaskName    = $task.TaskName
+        TaskPath    = $task.TaskPath
+        Description = ($task.Settings.Description -join "`n")  # Handle multi-line descriptions
+        Actions     = $actions.Command -join "; "
+        Arguments   = $actions.Arguments -join "; "
+    }
+}
+
+# Export to CSV
+$tasks | Export-Csv -Path $outputFile -NoTypeInformation -Force
+
+Write-Host "Autoruns have been exported to $outputFile"
