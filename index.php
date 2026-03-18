@@ -1,3 +1,4 @@
+<?php ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,7 +14,7 @@
             align-items: center;
             min-height: 100vh;
         }
-
+ 
         img {
             max-width: 100%;
             max-height: 100vh;
